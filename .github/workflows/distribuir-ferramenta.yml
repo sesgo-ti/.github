@@ -7,7 +7,7 @@
 #
 #   distribuir:
 #     needs: build
-#     uses: sesgo-ti/.github/.github/workflows/distribuir-ferramenta.yml@v1
+#     uses: sesgo-ti/.github/.github/workflows/distribuir-ferramenta.yml@<sha> # v1.0.0
 #     with:
 #       ferramenta: minha-ferramenta
 #       versao: ${{ needs.build.outputs.versao }}
