@@ -2,7 +2,7 @@
 #
 #   jobs:
 #     build:
-#       uses: sesgo-ti/.github/.github/workflows/maven-ci.yml@v1
+#       uses: sesgo-ti/.github/.github/workflows/maven-ci.yml@<sha> # v1.0.0
 #       with:
 #         maven-args: -B -ntp clean verify -Pquality
 #       secrets:
@@ -63,7 +63,7 @@ jobs:
           fetch-depth: ${{ inputs.fetch-depth }}
           persist-credentials: false
 
-      - uses: sesgo-ti/.github/.github/actions/setup-maven@v1
+      - uses: sesgo-ti/.github/.github/actions/setup-maven@8b9882bb70c7033b41ab57d02fd5fa9c8c23a75d # action idêntica à da v1.0.0
         with:
           java-version: ${{ inputs.java-version }}
 
