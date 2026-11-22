@@ -1,0 +1,13 @@
+# Checksums SHA-512 dos binários pinados do Apache Maven.
+# ÚNICA fonte de verificação: o download vem do Maven Central
+# (repo.maven.apache.org, imutável) e o hash é conferido contra ESTE
+# arquivo versionado — nenhuma resolução de checksum em runtime.
+#
+# Formato: <sha512><2 espaços><arquivo> (compatível com `sha512sum -c`).
+#
+# Bump de versão (Renovate, custom manager em renovate.json): o PR nasce
+# VERMELHO até um humano acrescentar a linha da nova versão — obter o
+# SHA-512 de https://downloads.apache.org/maven/maven-3/<v>/binaries/
+# (ou archive.apache.org para versões antigas), conferir contra o tarball
+# baixado do Central e versionar aqui no MESMO PR.
+831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6  apache-maven-3.9.16-bin.tar.gz

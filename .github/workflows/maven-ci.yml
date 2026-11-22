@@ -1,0 +1,85 @@
+# Uso:
+#
+#   jobs:
+#     build:
+#       uses: sesgo-ti/.github/.github/workflows/maven-ci.yml@v1
+#       with:
+#         maven-args: -B -ntp clean verify -Pquality
+#       secrets:
+#         maven-read-token: ${{ secrets.HUBSAUDE_MAVEN_READ_TOKEN }}
+#
+# O caller precisa conceder `permissions: contents: read`.
+name: maven-ci (reutilizável)
+
+on:
+  workflow_call:
+    inputs:
+      maven-args:
+        description: 'Argumentos do Maven (goals e perfis).'
+        type: string
+        default: '-B -ntp verify'
+      java-version:
+        description: 'Versão exata do JDK (ver action setup-maven).'
+        type: string
+        default: '21.0.12'
+      runs-on:
+        description: 'Rótulo do runner.'
+        type: string
+        default: 'ubuntu-24.04'
+      timeout-minutes:
+        type: number
+        default: 30
+      fetch-depth:
+        description: 'Profundidade do checkout (0 = histórico completo).'
+        type: number
+        default: 1
+      upload-path:
+        description: 'Glob de arquivos a anexar como artifact (vazio = nada).'
+        type: string
+        default: ''
+      upload-name:
+        description: 'Nome do artifact quando upload-path é informado.'
+        type: string
+        default: 'build'
+    secrets:
+      maven-read-token:
+        description: 'HUBSAUDE_MAVEN_READ_TOKEN do repositório chamador.'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Maven verify
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      MAVEN_ACTOR: ${{ github.actor }}
+      MAVEN_TOKEN: ${{ secrets.maven-read-token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ inputs.fetch-depth }}
+          persist-credentials: false
+
+      - uses: sesgo-ti/.github/.github/actions/setup-maven@v1
+        with:
+          java-version: ${{ inputs.java-version }}
+
+      - name: mvn ${{ inputs.maven-args }}
+        env:
+          MAVEN_ARGS_IN: ${{ inputs.maven-args }}
+        run: |
+          set -euo pipefail
+          read -r -a ARGS <<< "${MAVEN_ARGS_IN}"
+          mvn "${ARGS[@]}"
+
+      - name: Anexar artefatos
+        if: ${{ inputs.upload-path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.upload-name }}
+          path: ${{ inputs.upload-path }}
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,173 @@
+# Regras:
+#   - não constrói nada: recebe bytes já verificados via artifact do caller;
+#   - idempotente: asset já publicado com o MESMO digest = no-op verde;
+#   - nunca sobrescreve: asset com digest DIVERGENTE = falha fechada.
+#
+# Uso:
+#
+#   distribuir:
+#     needs: build
+#     uses: sesgo-ti/.github/.github/workflows/distribuir-ferramenta.yml@v1
+#     with:
+#       ferramenta: minha-ferramenta
+#       versao: ${{ needs.build.outputs.versao }}
+#       artifact-name: minha-ferramenta-dist
+#       arquivos: hubsaude-minha-ferramenta-1.2.3.jar
+#     secrets:
+#       dist-token: ${{ secrets.HUBSAUDE_DIST_TOKEN }}
+#
+# Para a CLI hubsaude instalar a ferramenta, ela também precisa entrar no
+# release.json assinado publicado em sesgo-ti/hubsaude.
+name: distribuir-ferramenta (reutilizável)
+
+on:
+  workflow_call:
+    inputs:
+      ferramenta:
+        description: 'Nome curto da ferramenta (ex.: simulador, safira).'
+        type: string
+        required: true
+      versao:
+        description: 'Versão MAJOR.MINOR.PATCH.'
+        type: string
+        required: true
+      artifact-name:
+        description: 'Nome do artifact (do mesmo run) com os arquivos a publicar.'
+        type: string
+        required: true
+      arquivos:
+        description: 'Nomes dos arquivos dentro do artifact, separados por espaço.'
+        type: string
+        required: true
+      destino:
+        description: 'Repositório de distribuição.'
+        type: string
+        default: 'sesgo-ti/hubsaude'
+    secrets:
+      dist-token:
+        description: 'HUBSAUDE_DIST_TOKEN (PAT com contents:write no destino).'
+        required: true
+    outputs:
+      url:
+        description: 'URL da release no destino.'
+        value: ${{ jobs.distribuir.outputs.url }}
+
+permissions:
+  contents: read
+
+jobs:
+  distribuir:
+    name: Distribuir ${{ inputs.ferramenta }} ${{ inputs.versao }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      url: ${{ steps.publicar.outputs.url || steps.destino.outputs.url }}
+    env:
+      FERRAMENTA: ${{ inputs.ferramenta }}
+      VERSAO: ${{ inputs.versao }}
+      ARQUIVOS: ${{ inputs.arquivos }}
+      DESTINO: ${{ inputs.destino }}
+      TAG_DESTINO: hubsaude-${{ inputs.ferramenta }}-v${{ inputs.versao }}
+    steps:
+      - name: Validar entradas e credencial
+        env:
+          DIST_TOKEN: ${{ secrets.dist-token }}
+        run: |
+          set -euo pipefail
+          [[ "${FERRAMENTA}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::ferramenta inválida: ${FERRAMENTA}"; exit 1; }
+          [[ "${VERSAO}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::versão inválida: ${VERSAO} (esperado MAJOR.MINOR.PATCH)"; exit 1; }
+          if [ -z "${DIST_TOKEN}" ]; then
+            echo "::error::Configure o segredo HUBSAUDE_DIST_TOKEN no repositório ${GITHUB_REPOSITORY}."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: dist
+
+      - name: Gerar checksums.txt
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          read -r -a LISTA <<< "${ARQUIVOS}"
+          for f in "${LISTA[@]}"; do
+            [[ "$f" != */* && -f "$f" ]] || { echo "::error::arquivo ausente no artifact (ou com caminho): $f"; exit 1; }
+          done
+          sha256sum "${LISTA[@]}" > checksums.txt
+          cat checksums.txt
+
+      - name: Avaliar estado no destino (idempotência, falha fechada)
+        id: destino
+        env:
+          GH_TOKEN: ${{ secrets.dist-token }}
+        run: |
+          set -euo pipefail
+          resp="${RUNNER_TEMP}/release.json"
+          if ! gh api "repos/${DESTINO}/releases/tags/${TAG_DESTINO}" > "${resp}" 2> "${RUNNER_TEMP}/err"; then
+            status="$(jq -r '.status // empty' "${resp}" 2>/dev/null || true)"
+            if [ "${status}" != "404" ]; then
+              cat "${RUNNER_TEMP}/err" || true
+              echo "::error::consulta a ${DESTINO}/releases/tags/${TAG_DESTINO} falhou sem ser 404; falha fechada."
+              exit 1
+            fi
+            echo "release inexistente no destino; publicação necessária."
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "url=$(jq -r .html_url "${resp}")" >> "$GITHUB_OUTPUT"
+          read -r -a LISTA <<< "${ARQUIVOS}"
+          LISTA+=(checksums.txt)
+          publicar=false
+          baixar() {
+            local tentativa
+            for tentativa in 1 2 3; do
+              gh release download "${TAG_DESTINO}" -R "${DESTINO}" -p "$1" -O "$2" --clobber && return 0
+              echo "::warning::download de $1 falhou (tentativa ${tentativa}/3)"
+              sleep $((tentativa * 5))
+            done
+            echo "::error::não foi possível baixar $1 de ${TAG_DESTINO} para comparar o digest; falha fechada."
+            return 1
+          }
+          for f in "${LISTA[@]}"; do
+            esperado="$(sha256sum "dist/$f" | cut -d' ' -f1)"
+            if ! NOME="$f" jq -e '.assets[] | select(.name == env.NOME)' "${resp}" > /dev/null; then
+              echo "asset ${f} ausente no destino."
+              publicar=true
+              continue
+            fi
+            baixar "$f" "${RUNNER_TEMP}/destino.bin"
+            atual="$(sha256sum "${RUNNER_TEMP}/destino.bin" | cut -d' ' -f1)"
+            if [ "${atual}" != "${esperado}" ]; then
+              echo "::error::asset ${f} já existe em ${TAG_DESTINO} com digest DIVERGENTE (destino=${atual}, esperado=${esperado}). Nunca sobrescrever."
+              exit 1
+            fi
+            echo "asset ${f} já publicado com digest idêntico."
+          done
+          echo "publicar=${publicar}" >> "$GITHUB_OUTPUT"
+
+      - name: Montar lista de arquivos
+        id: lista
+        if: ${{ steps.destino.outputs.publicar == 'true' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "files<<EOF_LISTA"
+            for f in ${ARQUIVOS} checksums.txt; do echo "dist/$f"; done
+            echo "EOF_LISTA"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publicar em ${{ inputs.destino }}
+        id: publicar
+        if: ${{ steps.destino.outputs.publicar == 'true' }}
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          repository: ${{ inputs.destino }}
+          token: ${{ secrets.dist-token }}
+          tag_name: ${{ env.TAG_DESTINO }}
+          name: hubsaude-${{ inputs.ferramenta }} ${{ inputs.versao }}
+          draft: false
+          prerelease: false
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          files: ${{ steps.lista.outputs.files }}

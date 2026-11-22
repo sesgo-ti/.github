@@ -1,0 +1,249 @@
+name: 'Setup Maven (HubSaúde — sesgo-ti, central)'
+description: >-
+  Instala JDK e Maven pinados e gera ~/.m2/settings.xml com dois
+  repositórios de leitura (leitura dupla, sem espelhar artefatos):
+
+    - `github-sesgo-ti`  → https://maven.pkg.github.com/sesgo-ti/hubsaude-maven
+      (o que a sesgo-ti produz; único destino de deploy);
+    - `github-hubsaude`  → https://maven.pkg.github.com/FabricaDeSoftwareINF/server-hubsaude
+      (o que o registry de origem já publica: hubsaude-parent, BOMs, core, infra...).
+
+  Credenciais lidas do ambiente do step que invoca o Maven:
+    - MAVEN_ACTOR / MAVEN_TOKEN (obrigatórias): `HUBSAUDE_MAVEN_READ_TOKEN`.
+      O GITHUB_TOKEN não serve: dá 404 em outro repositório.
+    - no step de deploy, MAVEN_TOKEN recebe `HUBSAUDE_MAVEN_WRITE_TOKEN`.
+
+inputs:
+  java-version:
+    description: 'Versão exata do JDK (forma reportada por java -version, ex.: 21.0.12).'
+    required: false
+    default: '21.0.12'
+  distribution:
+    description: 'Distribuição do JDK. A verificação de runtime exige temurin.'
+    required: false
+    default: 'temurin'
+  cache-dependency-path:
+    description: 'Globs (um por linha) para o cache Maven do setup-java; vazio = hash dos pom.xml.'
+    required: false
+    default: ''
+  maven-version:
+    description: 'Versão exata do Apache Maven (precisa de hash em maven-checksums.sha512 ao lado desta action).'
+    required: false
+    # renovate: datasource=maven depName=org.apache.maven:apache-maven
+    default: '3.9.16'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up JDK ${{ inputs.java-version }} (${{ inputs.distribution }})
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}
+        # Determinismo do build. Sem isto, o tool cache do
+        # runner decide qual build de X.Y.Z é usado: imagens diferentes
+        # servem o build base ou o respin de segurança sob o MESMO rótulo,
+        # e jobs do mesmo run divergem. `check-latest` ignora o cache e
+        # resolve pelo remoto, onde o maior build vence — o respin.
+        check-latest: true
+        cache: maven
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+    # Comprova no log o JDK EFETIVO (java, javac e JAVA_HOME) e falha cedo
+    # se divergir do input java-version — cobre
+    # resolução divergente do setup-java e JAVA_HOME herdado do runner.
+    - name: Verificar versão efetiva do JDK
+      shell: bash
+      env:
+        JAVA_PIN: ${{ inputs.java-version }}
+      run: bash "${GITHUB_ACTION_PATH}/verifica-java-runtime.sh" "${JAVA_PIN}"
+
+    # Instala a versão EXATA do Maven, em vez de usar a pré-instalada no
+    # runner. Escolha de mecanismo: download direto
+    # dos archives oficiais, e não a action de terceiro
+    # stCarolas/setup-maven — evita ampliar a cadeia de suprimentos do CI.
+    # Integridade: o binário vem do Maven Central
+    # (repo.maven.apache.org, retém todas as versões, imutáveis) e o
+    # checksum SHA-512 é conferido EXCLUSIVAMENTE contra o arquivo
+    # VERSIONADO maven-checksums.sha512 (ao lado desta action) — nenhuma
+    # resolução de checksum em runtime: hash obtido da mesma esfera de
+    # confiança que serve o binário não detectaria comprometimento
+    # coordenado, e o arquivo versionado dá auditabilidade em PR
+    # (trust-on-first-use). Versão ausente do arquivo = falha ANTES do
+    # download (o PR de bump do Renovate nasce vermelho até um humano
+    # completar o hash — fluxo documentado no próprio arquivo).
+    # Caminho de cache (${DESTINO}/bin/mvn existente) pula download e
+    # verificação: risco aceito em runners hospedados efêmeros; reavaliar
+    # se houver self-hosted. Sem cache dedicado: o tarball tem ~9 MB e o
+    # download do Central leva segundos.
+    - name: Instalar Apache Maven ${{ inputs.maven-version }} (pinado)
+      shell: bash
+      env:
+        MAVEN_VERSION: ${{ inputs.maven-version }}
+      run: |
+        set -euo pipefail
+        VERSAO="${MAVEN_VERSION:?input maven-version vazio}"
+        DESTINO="${RUNNER_TOOL_CACHE:-$HOME/.cache}/hubsaude-maven/${VERSAO}"
+        CHECKSUMS="${GITHUB_ACTION_PATH}/maven-checksums.sha512"
+        # `--retry-all-errors` é necessário porque `--retry` não repete
+        # todo erro HTTP (como o 403/429 transitório de CDN). Sem
+        # `--retry-delay`, o curl aplica backoff exponencial nativo
+        # (1s, 2s, 4s) e honra `Retry-After`; fixar o delay em 1s
+        # esgotava as quatro tentativas em ~3s, dentro da mesma janela
+        # do limitador que produziu o 429 (issue #3235). O
+        # `--connect-timeout` limita a espera por origem indisponível.
+        CURL_RETRY=(--retry 3 --retry-all-errors --connect-timeout 15)
+
+        if [[ ! -x "${DESTINO}/bin/mvn" ]]; then
+          [[ -f "${CHECKSUMS}" ]] || {
+            echo "::error::maven-checksums.sha512 ausente ao lado da action."
+            exit 1
+          }
+          ARQUIVO="apache-maven-${VERSAO}-bin.tar.gz"
+          # awk -v: o nome do arquivo entra como DADO (nunca interpolado em
+          # padrão/comando). Exatamente 1 entrada com hash de 128 hex.
+          CONTAGEM="$(awk -v arq="${ARQUIVO}" \
+            '$2 == arq && $1 ~ /^[0-9a-f]{128}$/ {c++} END {print c+0}' \
+            "${CHECKSUMS}")"
+          if [[ "${CONTAGEM}" -ne 1 ]]; then
+            echo "::error::maven-checksums.sha512 deve conter exatamente 1 entrada para ${ARQUIVO} (encontradas: ${CONTAGEM}). Bump de versão exige completar o hash no mesmo PR."
+            exit 1
+          fi
+
+          TMP="$(mktemp -d)"
+          TARBALL="${TMP}/${ARQUIVO}"
+
+          URL_BIN="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${VERSAO}/${ARQUIVO}"
+          echo "Baixando Maven ${VERSAO} de ${URL_BIN}"
+          curl -fsSL "${CURL_RETRY[@]}" -o "${TARBALL}" "${URL_BIN}"
+
+          # Verificação contra o hash VERSIONADO (única fonte).
+          awk -v arq="${ARQUIVO}" \
+            '$2 == arq && $1 ~ /^[0-9a-f]{128}$/ {print}' \
+            "${CHECKSUMS}" > "${TMP}/esperado.sha512"
+          (cd "${TMP}" && sha512sum -c esperado.sha512)
+
+          mkdir -p "${DESTINO}"
+          tar -xzf "${TARBALL}" -C "${DESTINO}" --strip-components=1
+          rm -rf "${TMP}"
+        fi
+
+        # Prepend no PATH dos steps seguintes: prevalece sobre o mvn do runner.
+        echo "${DESTINO}/bin" >> "$GITHUB_PATH"
+
+    # Falha fechada e legível ANTES do primeiro `mvn`. Sem isto, a
+    # ausência do PAT se manifesta como um 401/404 de resolução de
+    # dependência dezenas de linhas adiante, indistinguível de um erro de
+    # código.
+    - name: Exigir credencial de leitura do registry privado
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${MAVEN_TOKEN:-}" ]; then
+          echo "::error::secret de leitura do registry privado ausente: nenhum valor em MAVEN_TOKEN."
+          echo "::error::Configure o segredo HUBSAUDE_MAVEN_READ_TOKEN no repositório ${GITHUB_REPOSITORY} (escopo Actions; em PR do Dependabot, escopo Dependabot)."
+          exit 1
+        fi
+        echo "Credencial de leitura presente."
+
+    - name: Configure Maven settings.xml (sesgo-ti/hubsaude-maven + origem)
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.m2"
+        cat > "$HOME/.m2/settings.xml" <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0
+                                      https://maven.apache.org/xsd/settings-1.2.0.xsd">
+          <servers>
+            <server>
+              <id>github-sesgo-ti</id>
+              <username>\${env.MAVEN_ACTOR}</username>
+              <password>\${env.MAVEN_TOKEN}</password>
+            </server>
+            <server>
+              <id>github-hubsaude</id>
+              <username>\${env.MAVEN_ACTOR}</username>
+              <password>\${env.MAVEN_TOKEN}</password>
+            </server>
+          </servers>
+          <profiles>
+            <profile>
+              <id>sesgo-ti</id>
+              <repositories>
+                <repository>
+                  <id>github-sesgo-ti</id>
+                  <url>https://maven.pkg.github.com/sesgo-ti/hubsaude-maven</url>
+                  <releases>
+                    <enabled>true</enabled>
+                    <checksumPolicy>fail</checksumPolicy>
+                  </releases>
+                  <snapshots>
+                    <enabled>true</enabled>
+                    <updatePolicy>daily</updatePolicy>
+                    <checksumPolicy>fail</checksumPolicy>
+                  </snapshots>
+                </repository>
+                <repository>
+                  <id>github-hubsaude</id>
+                  <url>https://maven.pkg.github.com/FabricaDeSoftwareINF/server-hubsaude</url>
+                  <releases>
+                    <enabled>true</enabled>
+                    <checksumPolicy>fail</checksumPolicy>
+                  </releases>
+                  <snapshots>
+                    <enabled>false</enabled>
+                  </snapshots>
+                </repository>
+              </repositories>
+              <pluginRepositories>
+                <pluginRepository>
+                  <id>github-sesgo-ti</id>
+                  <url>https://maven.pkg.github.com/sesgo-ti/hubsaude-maven</url>
+                  <releases>
+                    <enabled>true</enabled>
+                    <checksumPolicy>fail</checksumPolicy>
+                  </releases>
+                  <snapshots>
+                    <enabled>true</enabled>
+                    <updatePolicy>daily</updatePolicy>
+                    <checksumPolicy>fail</checksumPolicy>
+                  </snapshots>
+                </pluginRepository>
+                <pluginRepository>
+                  <id>github-hubsaude</id>
+                  <url>https://maven.pkg.github.com/FabricaDeSoftwareINF/server-hubsaude</url>
+                  <releases>
+                    <enabled>true</enabled>
+                    <checksumPolicy>fail</checksumPolicy>
+                  </releases>
+                  <snapshots>
+                    <enabled>false</enabled>
+                  </snapshots>
+                </pluginRepository>
+              </pluginRepositories>
+            </profile>
+          </profiles>
+          <activeProfiles>
+            <activeProfile>sesgo-ti</activeProfile>
+          </activeProfiles>
+        </settings>
+        EOF
+
+    # Comprova no log a versão EFETIVA e
+    # falha cedo se o mvn resolvido no PATH não for o pinado.
+    - name: Verificar versão efetiva do Maven
+      shell: bash
+      env:
+        MAVEN_VERSION: ${{ inputs.maven-version }}
+      run: |
+        set -euo pipefail
+        mvn -version
+        EFETIVA="$(mvn -version | head -n1 | awk '{print $3}')"
+        if [[ "${EFETIVA}" != "${MAVEN_VERSION}" ]]; then
+          echo "::error::Maven efetivo (${EFETIVA}) difere do pinado (${MAVEN_VERSION})."
+          exit 1
+        fi
+        echo "Maven pinado em uso: ${EFETIVA}"
