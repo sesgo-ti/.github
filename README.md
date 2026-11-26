@@ -74,13 +74,7 @@ flowchart TB
 
 ### Segredos
 
-| Segredo | O que é |
-|---|---|
-| `HUBSAUDE_MAVEN_READ_TOKEN` | Token com leitura dos dois registries. |
-| `HUBSAUDE_MAVEN_WRITE_TOKEN` | Token com escrita no registry da sesgo-ti e leitura do de origem. |
-| `HUBSAUDE_DIST_TOKEN` | Token com escrita só em `sesgo-ti/hubsaude`. |
-
-Os segredos ficam em cada repositório. Se o repositório usa Dependabot e depende de pacote privado, o `HUBSAUDE_MAVEN_READ_TOKEN` também precisa estar no escopo Dependabot.
+Os segredos ficam no repositório que chama o workflow e são fornecidos pela equipe de operação. Se o repositório usa Dependabot e depende de pacote privado, o `HUBSAUDE_MAVEN_READ_TOKEN` também precisa estar no escopo Dependabot.
 
 ### Versões
 
