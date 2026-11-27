@@ -6,21 +6,64 @@ Para mudar um registry ou a versão do Java ou do Maven, altere só aqui.
 ## Como funciona
 
 ```mermaid
+---
+title: 1. Leitura — de onde os builds baixam pacotes
+---
+%%{init: {"flowchart": {"htmlLabels": false, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 70}}}%%
 flowchart TB
-  A[("Registry de origem<br/>pacotes do monorepo HubSaúde")]
-  L["Libs da sesgo-ti"]
-  N[("Registry da sesgo-ti")]
-  T["Ferramentas do integrador"]
-  S["sesgo-ti/hubsaude<br/>Releases de download"]
-  I(["Integrador"])
-
-  A -->|HUBSAUDE_MAVEN_READ_TOKEN| L
-  A -->|HUBSAUDE_MAVEN_READ_TOKEN| T
-  L -->|HUBSAUDE_MAVEN_WRITE_TOKEN| N
-  N -->|HUBSAUDE_MAVEN_READ_TOKEN| T
-  T -->|HUBSAUDE_DIST_TOKEN| S
-  S --> I
+  REPOS["Repositórios da sesgo-ti<br/>libs e ferramentas"]
+  subgraph FAB["FabricaDeSoftwareINF"]
+    ORI[("Registry Maven<br/>server-hubsaude")]
+  end
+  subgraph SES["sesgo-ti"]
+    REG[("Registry Maven<br/>hubsaude-maven")]
+  end
+  REPOS -->|"lê pacotes"| ORI
+  REPOS -->|"lê pacotes"| REG
+  classDef interno fill:#e8f0fe,stroke:#3367d6,color:#1a1a1a
+  classDef externo fill:#f1f3f4,stroke:#80868b,color:#1a1a1a
+  class REPOS,REG interno
+  class ORI externo
+  style SES fill:#ffffff,stroke:#3367d6,stroke-dasharray:5 4
+  style FAB fill:#ffffff,stroke:#80868b,stroke-dasharray:5 4
 ```
+
+```mermaid
+---
+title: 2. Publicação — quem publica onde e quem baixa
+---
+%%{init: {"flowchart": {"htmlLabels": false, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 70}}}%%
+flowchart TB
+  subgraph REPOS["Repositórios da sesgo-ti"]
+    direction LR
+    LIB["Libs internas"]
+    FER["Ferramentas<br/>do integrador"]
+  end
+  INT(["Integrador"])
+  subgraph SES["sesgo-ti"]
+    direction LR
+    REG[("Registry Maven<br/>hubsaude-maven")]
+    REL["Releases<br/>sesgo-ti/hubsaude"]
+  end
+  LIB -->|"publica pacotes"| REG
+  FER -->|"publica binários"| REL
+  INT -->|"baixa ferramentas"| REL
+  classDef interno fill:#e8f0fe,stroke:#3367d6,color:#1a1a1a
+  classDef pessoa fill:#fef7e0,stroke:#b06000,color:#1a1a1a
+  class LIB,FER,REG,REL interno
+  class INT pessoa
+  style REPOS fill:#ffffff,stroke:#3367d6,stroke-dasharray:5 4
+  style SES fill:#ffffff,stroke:#3367d6,stroke-dasharray:5 4
+```
+
+Leia cada seta como uma frase: origem → verbo → destino (ex.: "Libs internas publica pacotes no Registry Maven hubsaude-maven"). Azul: sesgo-ti. Cinza: fora da sesgo-ti. Amarelo: pessoa.
+
+| Ação | Segredo do repositório |
+|---|---|
+| lê de um registry | `HUBSAUDE_MAVEN_READ_TOKEN` |
+| publica no registry da sesgo-ti | `HUBSAUDE_MAVEN_WRITE_TOKEN` |
+| publica em `sesgo-ti/hubsaude` | `HUBSAUDE_DIST_TOKEN` |
+| baixa de `sesgo-ti/hubsaude` | nenhum (público) |
 
 - Os pacotes do monorepo de origem são lidos de lá, sem cópia.
 - O que a sesgo-ti produz vai para o registry da sesgo-ti.
