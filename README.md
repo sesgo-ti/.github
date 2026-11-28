@@ -9,7 +9,7 @@ Para mudar um registry ou a versão do Java ou do Maven, altere só aqui.
 ---
 title: 1. Leitura — de onde os builds baixam pacotes
 ---
-%%{init: {"flowchart": {"htmlLabels": false, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 70}}}%%
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 70}}}%%
 flowchart TB
   REPOS["Repositórios da sesgo-ti<br/>libs e ferramentas"]
   subgraph FAB["FabricaDeSoftwareINF"]
@@ -32,7 +32,7 @@ flowchart TB
 ---
 title: 2. Publicação — quem publica onde e quem baixa
 ---
-%%{init: {"flowchart": {"htmlLabels": false, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 70}}}%%
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400, "curve": "basis", "nodeSpacing": 60, "rankSpacing": 70}}}%%
 flowchart TB
   subgraph REPOS["Repositórios da sesgo-ti"]
     direction LR
